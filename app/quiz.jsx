@@ -1,308 +1,271 @@
-import React, { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, ScrollView,} from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Image,
+  TextInput,
+  Animated,
+  ScrollView,
+} from "react-native";
+import { Audio } from "expo-av";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
+/* ===== IMAGENS ===== */
 import macacoPrego from "../assets/images/quiz/macaco-prego.jpg";
 import gorila from "../assets/images/quiz/gorila.jpg";
 import chimpanze from "../assets/images/quiz/chimpanze.jpg";
 import mandril from "../assets/images/quiz/mandril.jpg";
 import orangotango from "../assets/images/quiz/orangotango.jpg";
 
-const QUESTIONS = [
-  {
-    id: 1,
-    question: "Qual é a raça do macaco da imagem?",
-    image: macacoPrego,
-    options: ["Macaco-prego", "Babuíno", "Gorila"],
-    correct: 0,
-  },
-  {
-    id: 2,
-    question: "Qual é a raça do macaco da imagem?",
-    image: gorila,
-    options: ["Gorila", "Sagui", "Macaco-aranha"],
-    correct: 0,
-  },
-  {
-    id: 3,
-    question: "Qual é a raça do macaco da imagem?",
-    image: chimpanze,
-    options: ["Chimpanzé", "Mandril", "Orangotango"],
-    correct: 0,
-  },
-  {
-    id: 4,
-    question: "Qual é a raça do macaco da imagem?",
-    image: mandril,
-    options: ["Mandril", "Gorila", "Babuíno"],
-    correct: 0,
-  },
-  {
-    id: 5,
-    question: "Qual é a raça do macaco da imagem?",
-    image: orangotango,
-    options: ["Orangotango", "Chimpanzé", "Gorila"],
-    correct: 0,
-  },
-  {
-    id: 6,
-    question: "Qual desses macacos é conhecido pela inteligência?",
-    image: chimpanze,
-    options: ["Chimpanzé", "Sagui", "Mandril"],
-    correct: 0,
-  },
-  {
-    id: 7,
-    question: "Qual desses macacos vive principalmente nas árvores?",
-    image: orangotango,
-    options: ["Orangotango", "Gorila", "Babuíno"],
-    correct: 0,
-  },
-  {
-    id: 8,
-    question: "Qual macaco possui coloração facial marcante?",
-    image: mandril,
-    options: ["Mandril", "Chimpanzé", "Gorila"],
-    correct: 0,
-  },
-  {
-    id: 9,
-    question: "Qual macaco é típico da América do Sul?",
-    image: macacoPrego,
-    options: ["Macaco-prego", "Mandril", "Gorila"],
-    correct: 0,
-  },
-  {
-    id: 10,
-    question: "Qual desses macacos é considerado um grande primata?",
-    image: gorila,
-    options: ["Gorila", "Sagui", "Macaco-prego"],
-    correct: 0,
-  },
+/* ===== SONS ===== */
+import correctSound from "../assets/sounds/correct.mp3";
+import wrongSound from "../assets/sounds/wrong.mp3";
+
+/* ===== QUESTÕES ===== */
+const QUESTIONS_RAW = [
+  { img: macacoPrego, q: "Qual é a raça do macaco da imagem?", opts: ["Macaco-prego", "Babuíno", "Gorila"], c: 0 },
+  { img: gorila, q: "Qual é a raça do macaco da imagem?", opts: ["Gorila", "Sagui", "Macaco-aranha"], c: 0 },
+  { img: chimpanze, q: "Qual é a raça do macaco da imagem?", opts: ["Chimpanzé", "Mandril", "Orangotango"], c: 0 },
+  { img: mandril, q: "Qual é a raça do macaco da imagem?", opts: ["Mandril", "Gorila", "Babuíno"], c: 0 },
+  { img: orangotango, q: "Qual é a raça do macaco da imagem?", opts: ["Orangotango", "Chimpanzé", "Gorila"], c: 0 },
 ];
 
+/* ===== SHUFFLE REAL ===== */
+function shuffleQuestion(q) {
+  const options = q.opts.map((t, i) => ({ text: t, correct: i === q.c }));
+  for (let i = options.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [options[i], options[j]] = [options[j], options[i]];
+  }
+  return {
+    ...q,
+    options,
+    correctIndex: options.findIndex((o) => o.correct),
+  };
+}
+
+/* ===== COMPONENTE ===== */
 export default function Quiz() {
-  const [screen, setScreen] = useState(1);
+  const [screen, setScreen] = useState("start");
   const [nickname, setNickname] = useState("");
+  const [questions, setQuestions] = useState([]);
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState([]);
+  const [ranking, setRanking] = useState([]);
 
-  function handleAnswer(optionIndex) {
-    const newAnswers = [...answers];
-    newAnswers[current] = optionIndex;
-    setAnswers(newAnswers);
+  const fade = useRef(new Animated.Value(0)).current;
+  const slide = useRef(new Animated.Value(30)).current;
+  const progress = useRef(new Animated.Value(0)).current;
 
-    if (current < QUESTIONS.length - 1) {
-      setCurrent(current + 1);
-    } else {
-      setScreen(3);
-    }
+  /* ===== INIT ===== */
+  useEffect(() => {
+    loadRanking();
+  }, []);
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fade, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(slide, { toValue: 0, duration: 400, useNativeDriver: true }),
+      Animated.timing(progress, {
+        toValue: (current + 1) / questions.length || 0,
+        duration: 400,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [current, questions]);
+
+  /* ===== AUDIO ===== */
+  async function play(correct) {
+    const { sound } = await Audio.Sound.createAsync(
+      correct ? correctSound : wrongSound
+    );
+    await sound.playAsync();
   }
 
-  function score() {
-    return answers.filter(
-      (ans, i) => ans === QUESTIONS[i].correct
-    ).length;
+  /* ===== RANKING ===== */
+  async function loadRanking() {
+    const data = await AsyncStorage.getItem("@quiz_rank");
+    if (data) setRanking(JSON.parse(data));
   }
 
-//tela 1
-  if (screen === 1) {
+  async function saveRanking(score) {
+    const updated = [...ranking, { nickname, score }]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+    setRanking(updated);
+    await AsyncStorage.setItem("@quiz_rank", JSON.stringify(updated));
+  }
+
+  /* ===== GAME ===== */
+  function startGame() {
+    setQuestions(QUESTIONS_RAW.map(shuffleQuestion));
+    setAnswers([]);
+    setCurrent(0);
+    setScreen("game");
+  }
+
+  function answer(index) {
+    const q = questions[current];
+    const correct = index === q.correctIndex;
+
+    play(correct);
+
+    const next = [...answers];
+    next[current] = index;
+    setAnswers(next);
+
+    fade.setValue(0);
+    slide.setValue(30);
+
+    setTimeout(() => {
+      if (current < questions.length - 1) {
+        setCurrent(current + 1);
+      } else {
+        const score = next.filter(
+          (a, i) => a === questions[i].correctIndex
+        ).length;
+        saveRanking(score);
+        setScreen("end");
+      }
+    }, 500);
+  }
+
+  /* ===== START ===== */
+  if (screen === "start") {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>🐒 Monkey Quiz</Text>
-
+        <Text style={styles.logo}>🐒 Monkey Quiz</Text>
         <TextInput
           style={styles.input}
-          placeholder="Digite seu nickname"
+          placeholder="Seu nickname"
           placeholderTextColor="#5D84A6"
           value={nickname}
           onChangeText={setNickname}
         />
-
         <TouchableOpacity
-          style={[
-            styles.button,
-            { opacity: nickname ? 1 : 0.4 },
-          ]}
+          style={[styles.primaryBtn, { opacity: nickname ? 1 : 0.4 }]}
           disabled={!nickname}
-          onPress={() => setScreen(2)}
+          onPress={startGame}
         >
-          <Text style={styles.buttonText}>Começar</Text>
+          <Text style={styles.primaryText}>COMEÇAR</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-//Tela 2 POR FAVOR NÃO MEXER ISACK!!!!!!
-  if (screen === 2) {
-    const q = QUESTIONS[current];
+  /* ===== GAME ===== */
+  if (screen === "game") {
+    const q = questions[current];
+    const width = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["0%", "100%"],
+    });
 
     return (
       <View style={styles.container}>
-        <Text style={styles.progress}>
-          {current + 1}/{QUESTIONS.length}
-        </Text>
-
-        <Text style={styles.subtitle}>
-          Pergunta {current + 1}
-        </Text>
-
-        <View style={styles.imageBox}>
-          <Image
-            source={q.image}
-            style={styles.image}
-            resizeMode="cover"
-          />
+        <View style={styles.progressBg}>
+          <Animated.View style={[styles.progressBar, { width }]} />
         </View>
 
-        <Text style={styles.question}>{q.question}</Text>
+        <Animated.View
+          style={[
+            styles.card,
+            { opacity: fade, transform: [{ translateY: slide }] },
+          ]}
+        >
+          <Image source={q.img} style={styles.image} />
+          <Text style={styles.question}>{q.q}</Text>
 
-        {q.options.map((opt, index) => (
-          <TouchableOpacity
-            key={index}
-            style={styles.option}
-            onPress={() => handleAnswer(index)}
-          >
-            <Text style={styles.optionText}>{opt}</Text>
-          </TouchableOpacity>
-        ))}
+          {q.options.map((o, i) => (
+            <TouchableOpacity
+              key={i}
+              style={styles.option}
+              onPress={() => answer(i)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.optionText}>{o.text}</Text>
+            </TouchableOpacity>
+          ))}
+        </Animated.View>
       </View>
     );
   }
 
-//tela 3
+  /* ===== END ===== */
   return (
     <ScrollView style={styles.container}>
-      <Text style={styles.title}>Resultado Final</Text>
-
+      <Text style={styles.logo}>Resultado</Text>
       <Text style={styles.score}>
-        {nickname}, você acertou {score()} de{" "}
-        {QUESTIONS.length}
+        Você acertou {answers.filter(
+          (a, i) => a === questions[i].correctIndex
+        ).length} de {questions.length}
       </Text>
 
-      {QUESTIONS.map((q, i) => {
-        const correct = answers[i] === q.correct;
-        return (
-          <View
-            key={q.id}
-            style={[
-              styles.resultBox,
-              {
-                borderColor: correct
-                  ? "#648C79"
-                  : "#5D84A6",
-              },
-            ]}
-          >
-            <Text style={styles.resultQuestion}>
-              {i + 1}. {q.question}
-            </Text>
-            <Text
-              style={{
-                color: correct
-                  ? "#648C79"
-                  : "#5D84A6",
-              }}
-            >
-              Sua resposta: {q.options[answers[i]]}
-            </Text>
-            {!correct && (
-              <Text style={{ color: "#648C79" }}>
-                Correta: {q.options[q.correct]}
-              </Text>
-            )}
-          </View>
-        );
-      })}
+      <Text style={styles.rankTitle}>🏆 Ranking</Text>
+      {ranking.map((r, i) => (
+        <Text key={i} style={styles.rank}>
+          {i + 1}. {r.nickname} — {r.score}
+        </Text>
+      ))}
     </ScrollView>
   );
 }
 
-
+/* ===== STYLES ===== */
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0D0D0D",
-    padding: 24,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: "#648C79",
-    textAlign: "center",
-    marginBottom: 32,
-  },
-  subtitle: {
-    fontSize: 18,
-    color: "#5D84A6",
-    textAlign: "center",
-    marginBottom: 16,
-  },
-  progress: {
-    fontSize: 16,
-    color: "#648C79",
-    textAlign: "center",
-  },
+  container: { flex: 1, backgroundColor: "#0D0D0D", padding: 24 },
+  logo: { fontSize: 36, color: "#648C79", fontWeight: "900", textAlign: "center", marginBottom: 30 },
+
   input: {
     borderWidth: 1,
     borderColor: "#204034",
-    borderRadius: 12,
-    padding: 16,
-    color: "#FFF",
-    marginBottom: 20,
-  },
-  button: {
-    backgroundColor: "#204034",
-    padding: 16,
-    borderRadius: 12,
-  },
-  buttonText: {
-    color: "#FFF",
-    fontSize: 18,
-    textAlign: "center",
-    fontWeight: "600",
-  },
-  imageBox: {
-    height: 220,
     borderRadius: 16,
-    overflow: "hidden",
-    marginBottom: 20,
-    backgroundColor: "#204034",
-  },
-  image: {
-    width: "100%",
-    height: "100%",
-  },
-  question: {
-    fontSize: 20,
-    color: "#FFF",
-    textAlign: "center",
-    marginBottom: 20,
-  },
-  option: {
-    backgroundColor: "#204034",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  optionText: {
+    padding: 18,
     color: "#FFF",
     fontSize: 16,
-    textAlign: "center",
+    marginBottom: 20,
   },
-  score: {
-    fontSize: 20,
-    color: "#FFF",
-    textAlign: "center",
-    marginBottom: 24,
+
+  primaryBtn: {
+    backgroundColor: "#204034",
+    padding: 18,
+    borderRadius: 16,
   },
-  resultBox: {
-    borderWidth: 1,
-    borderRadius: 12,
+  primaryText: { color: "#FFF", fontSize: 18, fontWeight: "700", textAlign: "center" },
+
+  progressBg: {
+    height: 12,
+    backgroundColor: "#1A1A1A",
+    borderRadius: 6,
+    marginBottom: 20,
+    overflow: "hidden",
+  },
+  progressBar: {
+    height: "100%",
+    backgroundColor: "#648C79",
+  },
+
+  card: {
+    backgroundColor: "#141414",
+    borderRadius: 24,
     padding: 16,
-    marginBottom: 16,
   },
-  resultQuestion: {
-    color: "#FFF",
-    marginBottom: 6,
+
+  image: { width: "100%", height: 240, borderRadius: 18, marginBottom: 16 },
+  question: { fontSize: 22, color: "#FFF", textAlign: "center", marginBottom: 20 },
+
+  option: {
+    backgroundColor: "#204034",
+    padding: 18,
+    borderRadius: 16,
+    marginBottom: 14,
   },
+  optionText: { color: "#FFF", fontSize: 16, textAlign: "center" },
+
+  score: { fontSize: 20, color: "#FFF", textAlign: "center", marginBottom: 20 },
+
+  rankTitle: { fontSize: 22, color: "#5D84A6", textAlign: "center", marginBottom: 10 },
+  rank: { color: "#FFF", textAlign: "center", marginBottom: 6 },
 });
